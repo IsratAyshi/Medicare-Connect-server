@@ -45,6 +45,58 @@ async function run() {
 
 
     // ----  APIs ----
+
+    // USERS related apis
+    
+    // GET Endpoint to fetch target patient live user details
+    app.get("/api/users/:userId", async (req, res) => {
+      try {
+        const userId = req.params.userId;
+        const query = { _id: new ObjectId(userId) };
+        
+        const result = await usersCollection.findOne(query);
+        if (!result) {
+          return res.status(404).json({ message: "User identity document record not found" });
+        }
+        
+        res.json(result);
+      } catch (error) {
+        console.error("Error fetching single user context details:", error);
+        res.status(500).send({ error: "Internal Server Error" });
+      }
+    });
+
+
+    app.patch("/api/users/profile", async (req, res) => {
+    try {
+      const { userId, name, phoneNumber, gender, image, accountRole } = req.body;
+
+      const filter = { _id: new ObjectId(userId) };
+
+      const updateDoc = {
+        $set: {
+          name: name,
+          phoneNumber: phoneNumber,
+          gender: gender?.toLowerCase(),
+          image: image, 
+          updatedAt: new Date() 
+        }
+      };
+
+      console.log(`Executing Semantic PATCH Profile Update for User ID: ${userId}`);
+      const result = await usersCollection.updateOne(filter, updateDoc);
+
+      if (result.matchedCount === 0) {
+        return res.status(404).send({ message: "Target user account document was not found" });
+      }
+
+      res.send(result);
+
+    } catch (error) {
+      console.error("Critical error inside patient user patching transaction:", error);
+      res.status(500).send({ error: "Internal Server Error updating database collection" });
+    }
+    });
     
     // DOCTORS related apis
     app.get('/api/doctors', async (req, res) => {
@@ -93,7 +145,7 @@ async function run() {
         console.error("Failed to fetch clinicians catalog:", error);
         res.status(500).send({ error: "Internal Server Error" });
     }
-});
+    });
 
     app.get("/api/doctors/:userId", async (req, res) => {
       const userId = req.params.userId;
@@ -105,6 +157,25 @@ async function run() {
       }
       res.json(result);
     });
+
+    app.get('/api/doctors/details/:id', async (req, res) => {
+      try {
+        const id = req.params.id;
+        
+        const query = { _id: new ObjectId(id) };
+        const result = await doctorsCollection.findOne(query);
+
+        if (!result) {
+          return res.status(404).send({ message: "Doctor profile not found" });
+        }
+        res.send(result);
+
+      } catch (error) {
+        console.error("Error fetching doctor details:", error);
+        res.status(500).send({ error: "Internal Server Error" });
+      }
+    });
+
 
     app.post("/api/doctors", async (req, res) => {
       const doctorData = req.body;
@@ -167,6 +238,19 @@ async function run() {
     });
 
 
+    // reviews related apis
+    app.get('/api/reviews/:doctorId', async (req, res) => {
+      try {
+        const { doctorId } = req.params;
+        const query = { doctorId: doctorId };
+        const reviews = await reviewsCollection.find(query).toArray();
+        res.send(reviews);
+      } 
+      catch (error) {
+        console.error("Error fetching reviews:", error);
+        res.status(500).send({ error: "Internal Server Error" });
+      }
+    });
 
 
     // Send a ping to confirm a successful connection
