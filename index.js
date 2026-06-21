@@ -47,10 +47,53 @@ async function run() {
     // ----  APIs ----
     
     // DOCTORS related apis
-    app.get("/api/doctors", async (req, res) => {
-      const result = await doctorsCollection.find().toArray();
-      res.send(result);
-    });
+    app.get('/api/doctors', async (req, res) => {
+    try {
+        console.log('Doctors Filtering params:', req.query);
+        const query = {};
+
+        // 1. Regex Text Searching Match
+        if (req.query.search) {
+            query.doctorName = { $regex: req.query.search, $options: 'i' };
+        }
+
+        // 2. Exact Medical Specialty Match
+        if (req.query.specialty && req.query.specialty !== 'all') {
+            // Converting normalized slugs back if needed e.g. 'general-medicine' to regex/string
+            const searchPattern = req.query.specialty.replace('-', ' ');
+            query.specialization = { $regex: searchPattern, $options: 'i' };
+        }
+
+        // 3. Setup Sorting Strategies
+        let sortOption = {};
+        if (req.query.sortBy) {
+            if (req.query.sortBy === 'fee-asc') sortOption.consultationFee = 1;
+            if (req.query.sortBy === 'fee-desc') sortOption.consultationFee = -1;
+            if (req.query.sortBy === 'experience-desc') sortOption.experience = -1;
+        } else {
+            sortOption.consultationFee = 1; // Default fallback sorting
+        }
+
+        // 4. Executing Cursor Pagination Matching Jobs Framework
+        const page = parseInt(req.query.page, 10) || 1;
+        const perPage = parseInt(req.query.perPage, 10) || 12;
+        const skipItems = (page - 1) * perPage;
+
+        const total = await doctorsCollection.countDocuments(query);
+
+        const cursor = doctorsCollection.find(query)
+            .sort(sortOption)
+            .skip(skipItems)
+            .limit(perPage);
+            
+        const doctors = await cursor.toArray();
+        return res.send({ total, doctors });
+
+    } catch (error) {
+        console.error("Failed to fetch clinicians catalog:", error);
+        res.status(500).send({ error: "Internal Server Error" });
+    }
+});
 
     app.get("/api/doctors/:userId", async (req, res) => {
       const userId = req.params.userId;
@@ -98,6 +141,29 @@ async function run() {
       }
 
       res.send(result);
+    });
+
+
+    app.patch("/api/doctors/schedule/:userId", async (req, res) => {
+        const { userId } = req.params;
+        const { availableDays, availableSlots } = req.body;
+
+        if (!userId) {
+          return res.status(400).send({ message: "User ID is required to update schedule" });
+        }
+
+        const filter = { userId: userId };
+        const updateDoc = {
+          $set: {
+            availableDays: availableDays || [],
+            availableSlots: availableSlots || [],
+            updatedAt: new Date()
+          }
+        };
+
+        const result = await doctorsCollection.updateOne(filter, updateDoc);
+        
+        res.send(result);
     });
 
 
