@@ -48,7 +48,6 @@ async function run() {
 
     // USERS related apis
     
-    // GET Endpoint to fetch target patient live user details
     app.get("/api/users/:userId", async (req, res) => {
       try {
         const userId = req.params.userId;
@@ -98,6 +97,7 @@ async function run() {
     }
     });
     
+
     // DOCTORS related apis
     app.get('/api/doctors', async (req, res) => {
     try {
@@ -145,6 +145,11 @@ async function run() {
         console.error("Failed to fetch clinicians catalog:", error);
         res.status(500).send({ error: "Internal Server Error" });
     }
+    });
+
+    app.get("/api/doctors/featured", async (req, res) => {
+        const result = await doctorsCollection.find().limit(4).toArray();
+        res.send(result);
     });
 
     app.get("/api/doctors/:userId", async (req, res) => {
@@ -228,7 +233,7 @@ async function run() {
           $set: {
             availableDays: availableDays || [],
             availableSlots: availableSlots || [],
-            updatedAt: new Date()
+            // updatedAt: new Date()
           }
         };
 
@@ -251,6 +256,33 @@ async function run() {
         res.status(500).send({ error: "Internal Server Error" });
       }
     });
+
+
+    // stats related apis
+    app.get('/api/overview-stats', async (req, res) => {
+      try {
+          // Query counts in parallel for optimal database response latency
+          const [totalDoctors, totalPatients, totalAppointments, totalReviews] = await Promise.all([
+              usersCollection.countDocuments({ accountRole: "medical_specialist" }),
+              usersCollection.countDocuments({ accountRole: "patient_family" }),
+              appointmentsCollection.countDocuments({}),
+              reviewsCollection.countDocuments({})
+          ]);
+
+          res.send({
+              totalDoctors,
+              totalPatients,
+              totalAppointments,
+              totalReviews
+          });
+      } catch (error) {
+          console.error("Failed to compile dashboard aggregate matrix counter:", error);
+          res.status(500).send({ error: "Internal Server Error compiling platform statistics" });
+      }
+    });
+
+
+
 
 
     // Send a ping to confirm a successful connection
