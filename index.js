@@ -7,6 +7,8 @@ dotenv.config();
 const { MongoClient, ServerApiVersion, ObjectId } = require('mongodb');
 const app = express();
 const cors = require("cors");
+const Stripe = require('stripe');
+const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
 
 app.use(cors());
 app.use(express.json());
@@ -195,16 +197,20 @@ async function run() {
       }
 
       const filter = { userId: userId };
+
+      const existingDoctor = await doctorsCollection.findOne(filter);
+    const existingPriceId = existingDoctor?.stripePriceId || null;
+
       const updateDoc = {
         $set: {
           ...doctorData,
+          stripePriceId: existingPriceId,
           updatedAt: new Date()
         }
       };
 
       // for new profile
       const options = { upsert: true };
-
       const result = await doctorsCollection.updateOne(filter, updateDoc, options);
 
 
@@ -295,9 +301,39 @@ async function run() {
         const { verificationStatus } = req.body;
 
         const filter = { _id: new ObjectId(id) };
+
+        const doctor = await doctorsCollection.findOne(filter);
+    if (!doctor) {
+      return res.status(404).send({ message: "Practitioner record identity not found" });
+    }
+
+        let targetPriceId = doctor.stripePriceId || null;
+
+        if (verificationStatus === "Approved" && !targetPriceId) {
+      console.log(`Automating Stripe Item generation for clinician: ${doctor.doctorName}`);
+
+
+      // Create product on Stripe
+      const stripeProduct = await stripe.products.create({
+        name: `Appointment with ${doctor.doctorName}`,
+        description: `${doctor.specialization} Specialist Consultation - Medicare Connect`,
+        images: doctor.profileImage ? [doctor.profileImage] : []
+      });
+
+      // Create consultation base fee price (Multiplied by 100 to convert dollars to cents)
+      const stripePrice = await stripe.prices.create({
+        product: stripeProduct.id,
+        unit_amount: Math.round(parseFloat(doctor.consultationFee) * 100),
+        currency: "usd",
+      });
+
+      targetPriceId = stripePrice.id;
+    }
+
         const updateDoc = {
           $set: {
             verificationStatus: verificationStatus,
+            stripePriceId: targetPriceId,
             updatedAt: new Date()
           }
         };
@@ -312,6 +348,52 @@ async function run() {
       } catch (error) {
         console.error("Failed to update verification status:", error);
         res.status(500).send({ error: "Internal Server Error updating license validation status" });
+      }
+    });
+
+
+    // Appointment related apis
+
+    app.post("/api/appointments/book", async (req, res) => {
+      try {
+        const { 
+          patientId, 
+          doctorId, 
+          appointmentDate, 
+          appointmentTime, 
+          appointmentStatus, 
+          symptoms, 
+          paymentStatus 
+        } = req.body;
+
+        // Basic Validation check
+        if (!doctorId || !appointmentDate || !appointmentTime) {
+          return res.status(400).send({ message: "Missing required core scheduling information." });
+        }
+
+        const appointmentPayload = {
+          patientId: patientId || "mock-patient-123", // Replaced with authenticated user id when context is ready
+          doctorId: doctorId,
+          appointmentDate: appointmentDate,
+          appointmentTime: appointmentTime,
+          appointmentStatus: appointmentStatus || "pending",
+          symptoms: symptoms || "",
+          paymentStatus: paymentStatus || "unpaid", // "paid" or "unpaid"
+          createdAt: new Date(),
+          updatedAt: new Date()
+        };
+
+        const result = await appointmentsCollection.insertOne(appointmentPayload);
+        
+        res.status(201).send({ 
+          success: true, 
+          message: "Appointment successfully committed to database registry.",
+          appointmentId: result.insertedId 
+        });
+
+      } catch (error) {
+        console.error("Failed to insert appointment:", error);
+        res.status(500).send({ error: "Internal Server Error saving appointment entry." });
       }
     });
 
