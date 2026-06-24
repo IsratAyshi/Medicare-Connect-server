@@ -47,6 +47,10 @@ async function run() {
     // ----  APIs ----
 
     // USERS related apis
+    app.get("/api/users", async (req, res) => {
+      const result = await usersCollection.find().toArray();
+      res.send(result);
+    });
     
     app.get("/api/users/:userId", async (req, res) => {
       try {
@@ -240,6 +244,75 @@ async function run() {
         const result = await doctorsCollection.updateOne(filter, updateDoc);
         
         res.send(result);
+    });
+
+
+    // ADMIN related apis
+    app.get("/api/admin/users", async (req, res) => {
+      
+      const users = await usersCollection.find({}).sort({ createdAt: -1 }).toArray();
+
+      res.send(users || []);
+    });
+
+    app.get("/api/admin/doctors", async (req, res) => {
+      const doctors = await doctorsCollection.find({}).toArray();
+      res.send(doctors || []);
+    });
+
+
+    app.patch("/api/admin/users/status/:id", async (req, res) => {
+      try {
+        const { id } = req.params;
+        const { status } = req.body;
+
+        const filter = { _id: new ObjectId(id) };
+        const updateDoc = {
+          $set: {
+            status: status,
+            updatedAt: new Date()
+          }
+        };
+
+        const result = await usersCollection.updateOne(filter, updateDoc);
+        
+        if (result.matchedCount === 0) {
+          return res.status(404).send({ message: "Target account record not found" });
+        }
+
+        res.send({ success: true, modifiedCount: result.modifiedCount });
+
+      } catch (error) {
+        console.error("Failed to update user account status:", error);
+        res.status(500).send({ error: "Internal Server Error updating status code" });
+      }
+    });
+
+
+    app.patch("/api/admin/doctors/verify/:id", async (req, res) => {
+      try {
+        const { id } = req.params;
+        const { verificationStatus } = req.body;
+
+        const filter = { _id: new ObjectId(id) };
+        const updateDoc = {
+          $set: {
+            verificationStatus: verificationStatus,
+            updatedAt: new Date()
+          }
+        };
+
+        const result = await doctorsCollection.updateOne(filter, updateDoc);
+        
+        if (result.matchedCount === 0) {
+          return res.status(404).send({ message: "Medical Specialist's record not found" });
+        }
+
+        res.send({ success: true, modifiedCount: result.modifiedCount });
+      } catch (error) {
+        console.error("Failed to update verification status:", error);
+        res.status(500).send({ error: "Internal Server Error updating license validation status" });
+      }
     });
 
 
