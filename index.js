@@ -43,6 +43,7 @@ async function run() {
     const appointmentsCollection = database.collection("appointments");
     const reviewsCollection = database.collection("reviews");
     const paymentsCollection = database.collection("payments");
+    const prescriptionsCollection = database.collection("prescriptions");
 
 
 
@@ -566,7 +567,7 @@ async function run() {
     });
 
 
-    // reviews related apis
+    // Reviews related apis
     app.get('/api/reviews/:doctorId', async (req, res) => {
       try {
         const { doctorId } = req.params;
@@ -577,6 +578,70 @@ async function run() {
       catch (error) {
         console.error("Error fetching reviews:", error);
         res.status(500).send({ error: "Internal Server Error" });
+      }
+    });
+
+
+    app.get("/api/reviews/patient/:patientId", async (req, res) => {
+      try {
+        const { patientId } = req.params;
+
+        const reviews = await reviewsCollection.aggregate([
+          { $match: { patientId: patientId } },
+          {
+            $addFields: {
+              docObjId: { $toObjectId: "$doctorId" }
+            }
+          },
+          {
+            $lookup: {
+              from: "doctors",
+              localField: "docObjId",
+              foreignField: "_id",
+              as: "doctorDetails"
+            }
+          },
+          {
+            $unwind: {
+              path: "$doctorDetails",
+              preserveNullAndEmptyArrays: true
+            }
+          },
+          { $sort: { createdAt: -1 } }
+        ]).toArray();
+
+        return res.status(200).json({ success: true, data: reviews });
+      } catch (error) {
+        console.error("Aggregation error fetching reviews:", error);
+        return res.status(500).json({ success: false, error: error.message });
+      }
+    });
+
+
+    app.post("/api/reviews", async (req, res) => {
+      try {
+
+        // console.log("Incoming Review Body Payload:", req.body);
+
+        const { patientId, doctorId, rating, reviewText } = req.body;
+
+        if (!patientId || !doctorId || !rating || !reviewText) {
+          return res.status(400).json({ success: false, error: "Missing required payload values." });
+        }
+
+        const reviewPayload = {
+          patientId,
+          doctorId,
+          rating: Number(rating),
+          reviewText,
+          createdAt: new Date()
+        };
+
+        const result = await reviewsCollection.insertOne(reviewPayload);
+        return res.status(201).json({ success: true, data: result });
+      } catch (error) {
+        console.error("Failed inserting feedback log:", error);
+        return res.status(500).json({ success: false, error: error.message });
       }
     });
 
