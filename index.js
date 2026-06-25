@@ -398,6 +398,65 @@ async function run() {
     });
 
 
+    app.post("/api/appointments/fulfill-paid", async (req, res) => {
+      try {
+        const { 
+          patientId, 
+          doctorId, 
+          appointmentDate, 
+          appointmentTime, 
+          symptoms, 
+          amount, 
+          transactionId 
+        } = req.body;
+
+        // 1. Check if this transaction has already been logged to prevent duplicates on page reload
+        const existingPayment = await paymentsCollection.findOne({ transactionId });
+        if (existingPayment) {
+          return res.status(200).json({ success: true, message: "Transaction already processed." });
+        }
+
+        // 2. Insert the paid appointment document into appointmentsCollection
+        const appointmentPayload = {
+          patientId,
+          doctorId,
+          appointmentDate,
+          appointmentTime,
+          symptoms,
+          appointmentStatus: "pending", 
+          paymentStatus: "paid",
+          createdAt: new Date()
+        };
+
+        const appointmentResult = await appointmentsCollection.insertOne(appointmentPayload);
+
+        const insertedAppointmentId = appointmentResult.insertedId.toString();
+
+        // 3. Log the completed payment record into paymentsCollection
+        const paymentPayload = {
+          appointmentId: insertedAppointmentId,
+          patientId,
+          doctorId,
+          amount: Number(amount),
+          transactionId,
+          paymentDate: new Date()
+        };
+
+        await paymentsCollection.insertOne(paymentPayload);
+
+        // Return a structured JSON block back to your handleStatusCode parser
+        return res.status(201).json({ 
+          success: true, 
+          message: "Appointment and payment records successfully saved." 
+        });
+
+      } catch (error) {
+        console.error("Express database fullfilment error:", error);
+        return res.status(500).json({ error: "Internal database write routine failure." });
+      }
+    });
+
+
     // reviews related apis
     app.get('/api/reviews/:doctorId', async (req, res) => {
       try {
