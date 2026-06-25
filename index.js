@@ -353,6 +353,46 @@ async function run() {
 
 
     // Appointment related apis
+    app.get("/api/appointments/patient/:patientId", async (req, res) => {
+      const { patientId } = req.params;
+      
+      const appointments = await appointmentsCollection.aggregate([
+        {
+          $match: {
+            patientId: patientId
+          }
+        },
+        {
+          $addFields: {
+            docObjId: {
+              $toObjectId: "$doctorId"
+            }
+          }
+        },
+        {
+          $lookup: {
+            from: "doctors",
+            localField: "docObjId",
+            foreignField: "_id",
+            as: "doctorDetails"
+          }
+        },
+        {
+          $unwind: {
+            path: "$doctorDetails",
+            preserveNullAndEmptyArrays: true
+          }
+        },
+        {
+          $sort: {
+            createdAt: -1
+          }
+        }
+      ]).toArray();
+
+      return res.status(200).json({ success: true, data: appointments });
+    });
+
 
     app.post("/api/appointments/book", async (req, res) => {
       try {
@@ -401,6 +441,7 @@ async function run() {
     app.post("/api/appointments/fulfill-paid", async (req, res) => {
       try {
         const { 
+          appointmentId,
           patientId, 
           doctorId, 
           appointmentDate, 
@@ -410,31 +451,53 @@ async function run() {
           transactionId 
         } = req.body;
 
-        // 1. Check if this transaction has already been logged to prevent duplicates on page reload
+        // Check if this transaction has already been logged
         const existingPayment = await paymentsCollection.findOne({ transactionId });
         if (existingPayment) {
           return res.status(200).json({ success: true, message: "Transaction already processed." });
         }
 
-        // 2. Insert the paid appointment document into appointmentsCollection
-        const appointmentPayload = {
-          patientId,
-          doctorId,
-          appointmentDate,
-          appointmentTime,
-          symptoms,
-          appointmentStatus: "pending", 
-          paymentStatus: "paid",
-          createdAt: new Date()
-        };
+        let targetAppointmentId = appointmentId;
 
-        const appointmentResult = await appointmentsCollection.insertOne(appointmentPayload);
+        if (appointmentId && appointmentId !== "null" && appointmentId !== "undefined") {
+          const updateResult = await appointmentsCollection.updateOne(
+            { 
+              _id: new ObjectId(appointmentId) 
+            }, 
+            { 
+              $set: { 
+                paymentStatus: "paid",
+                updatedAt: new Date()
+              } 
+            }
+          );
 
-        const insertedAppointmentId = appointmentResult.insertedId.toString();
+          if (updateResult.matchedCount === 0) {
+            return res.status(404).json({ success: false, error: "Dashboard appointment record not found." });
+          }
+        }
 
-        // 3. Log the completed payment record into paymentsCollection
+        else {
+        // Insert the new paid appointment into appointmentsCollection
+          const appointmentPayload = {
+            patientId,
+            doctorId,
+            appointmentDate,
+            appointmentTime,
+            symptoms: symptoms || "",
+            appointmentStatus: "pending", 
+            paymentStatus: "paid",
+            createdAt: new Date()
+          };
+
+          const insertResult = await appointmentsCollection.insertOne(appointmentPayload);
+          targetAppointmentId = insertResult.insertedId.toString();
+        }
+
+        
+        // Log the completed payment record into paymentsCollection
         const paymentPayload = {
-          appointmentId: insertedAppointmentId,
+          appointmentId: targetAppointmentId,
           patientId,
           doctorId,
           amount: Number(amount),
@@ -444,7 +507,6 @@ async function run() {
 
         await paymentsCollection.insertOne(paymentPayload);
 
-        // Return a structured JSON block back to your handleStatusCode parser
         return res.status(201).json({ 
           success: true, 
           message: "Appointment and payment records successfully saved." 
@@ -453,6 +515,53 @@ async function run() {
       } catch (error) {
         console.error("Express database fullfilment error:", error);
         return res.status(500).json({ error: "Internal database write routine failure." });
+      }
+    });
+
+
+    // Payments related apis
+    app.get("/api/payments/patient/:patientId", async (req, res) => {
+      try {
+        const { patientId } = req.params;
+
+        const payments = await paymentsCollection.aggregate([
+          {
+            $match: {
+              patientId: patientId
+            }
+          },
+          {
+            $addFields: {
+              docObjId: { 
+                $toObjectId: "$doctorId" 
+              }
+            }
+          },
+          {
+            $lookup: {
+              from: "doctors",
+              localField: "docObjId",
+              foreignField: "_id",
+              as: "doctorDetails"
+            }
+          },
+          {
+            $unwind: {
+              path: "$doctorDetails",
+              preserveNullAndEmptyArrays: true
+            }
+          },
+          {
+            $sort: {
+              "paymentDate": -1,
+            }
+          }
+        ]).toArray();
+
+        return res.status(200).json({ success: true, data: payments });
+      } catch (error) {
+        console.error("Failed aggregating payment history:", error);
+        return res.status(500).json({ success: false, error: error.message });
       }
     });
 
