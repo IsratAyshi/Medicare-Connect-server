@@ -44,20 +44,84 @@ async function run() {
     const reviewsCollection = database.collection("reviews");
     const paymentsCollection = database.collection("payments");
     const prescriptionsCollection = database.collection("prescriptions");
+    const sessionCollection = database.collection('session');
+
+
+    //VERIFICATION RELATED middleware for session token
+    const verifyToken = async(req, res, next) => {
+      // console.log("headers: ", req.headers);
+
+      const authHeader = req.headers?.authorization;
+      if (!authHeader) {
+        return res.status(401).send({ error: "Unauthorized access" });
+      }
+
+      const token = authHeader.split(" ")[1];
+
+      if (!token || token === "null") {
+        return res.status(401).send({ error: "Unauthorized access" });
+      }
+
+      const query = { token: token };
+      const session = await sessionCollection.findOne(query);
+
+      if (!session) {
+        return res.status(401).send({ error: "Unauthorized access" });
+      }
+
+      const userId = session.userId;
+      const userQuery = { _id: new ObjectId(userId) };
+
+      const user = await usersCollection.findOne(userQuery);
+
+      if (!user) {
+        return res.status(401).send({ error: "Unauthorized access" });
+      }
+
+      req.user = user;
+      next();
+    }
+
+    const verifyAdmin = async (req, res, next) => {
+        if (req.user.role !== 'admin' || req.user.accountRole !== 'admin') {
+            return res.status(403).send({ message: 'Forbidden access' })
+        }
+        next();
+    }
+
+    const verifyPatient = async (req, res, next) => {
+        if (req.user.accountRole !== 'patient_family') {
+            return res.status(403).send({ message: 'Forbidden access' })
+        }
+        next();
+    }
+
+    const verifyMedSpecialist = async (req, res, next) => {
+        if (req.user.accountRole !== 'medical_specialist') {
+            return res.status(403).send({ message: 'Forbidden access' })
+        }
+        next();
+    }
 
 
 
     // ----  APIs ----
 
     // USERS related apis
-    app.get("/api/users", async (req, res) => {
-      const result = await usersCollection.find().toArray();
-      res.send(result);
-    });
+
+    // app.get("/api/users", async (req, res) => {
+    //   const result = await usersCollection.find().toArray();
+    //   res.send(result);
+    // });
     
-    app.get("/api/users/:userId", async (req, res) => {
+    app.get("/api/users/:userId", verifyToken, verifyPatient, async (req, res) => {
       try {
         const userId = req.params.userId;
+
+        if (req.user._id.toString() !== userId) {
+          return res.status(403).send({ message: "Forbidden access" });
+        }
+
         const query = { _id: new ObjectId(userId) };
         
         const result = await usersCollection.findOne(query);
@@ -73,9 +137,13 @@ async function run() {
     });
 
 
-    app.patch("/api/users/profile", async (req, res) => {
+    app.patch("/api/users/profile", verifyToken, verifyPatient, async (req, res) => {
     try {
       const { userId, name, phoneNumber, gender, image, accountRole } = req.body;
+
+      if (req.user._id.toString() !== userId) {
+        return res.status(403).send({ message: "Forbidden access" });
+      }
 
       const filter = { _id: new ObjectId(userId) };
 
@@ -159,8 +227,13 @@ async function run() {
         res.send(result);
     });
 
-    app.get("/api/doctors/:userId", async (req, res) => {
+    app.get("/api/doctors/:userId", verifyToken, verifyMedSpecialist, async (req, res) => {
       const userId = req.params.userId;
+
+      if (req.user._id.toString() !== userId) {
+        return res.status(403).send({ message: "Forbidden access" });
+      }
+
       const query = { userId: userId };
       const result = await doctorsCollection.findOne(query);
 
@@ -189,12 +262,16 @@ async function run() {
     });
 
 
-    app.post("/api/doctors", async (req, res) => {
+    app.post("/api/doctors", verifyToken, verifyMedSpecialist, async (req, res) => {
       const doctorData = req.body;
       const userId = doctorData.userId;
 
       if (!userId) {
         return res.status(400).send({ message: "User ID is required to create a doctor profile" });
+      }
+
+      if (req.user._id.toString() !== userId) {
+        return res.status(403).send({ message: "Forbidden access" });
       }
 
       const filter = { userId: userId };
@@ -231,12 +308,16 @@ async function run() {
     });
 
 
-    app.patch("/api/doctors/schedule/:userId", async (req, res) => {
+    app.patch("/api/doctors/schedule/:userId", verifyToken, verifyMedSpecialist, async (req, res) => {
         const { userId } = req.params;
         const { availableDays, availableSlots } = req.body;
 
         if (!userId) {
           return res.status(400).send({ message: "User ID is required to update schedule" });
+        }
+
+        if (req.user._id.toString() !== userId) {
+          return res.status(403).send({ message: "Forbidden access" });
         }
 
         const filter = { userId: userId };
@@ -255,9 +336,13 @@ async function run() {
 
 
     // docotr dashboard appointment and prescription related apis
-    app.get("/api/doctor/appointments/:userId", async (req, res) => {
+    app.get("/api/doctor/appointments/:userId", verifyToken, verifyMedSpecialist, async (req, res) => {
       try {
         const { userId } = req.params;
+
+        if (req.user._id.toString() !== userId) {
+          return res.status(403).send({ message: "Forbidden access" });
+        }
 
         const doctorProfile = await doctorsCollection.findOne({ userId: userId });
     
@@ -306,7 +391,7 @@ async function run() {
     });
 
 
-    app.get("/api/doctor/prescriptions/list/:doctorId", async (req, res) => {
+    app.get("/api/doctor/prescriptions/list/:doctorId", verifyToken, verifyMedSpecialist, async (req, res) => {
       try {
         const { doctorId } = req.params;
         
@@ -349,7 +434,7 @@ async function run() {
     });
 
 
-    app.get("/api/doctor/patient-details/:patientId", async (req, res) => {
+    app.get("/api/doctor/patient-details/:patientId", verifyToken, verifyMedSpecialist, async (req, res) => {
       try {
         const { patientId } = req.params;
 
@@ -366,7 +451,7 @@ async function run() {
     });
 
 
-    app.post("/api/doctor/prescriptions/issue", async (req, res) => {
+    app.post("/api/doctor/prescriptions/issue", verifyToken, verifyMedSpecialist, async (req, res) => {
       try {
         const { doctorId, patientId, appointmentId, diagnosis, medications, notes } = req.body;
 
@@ -404,7 +489,7 @@ async function run() {
     });
 
 
-    app.patch("/api/doctor/appointments/:appointmentId/status", async (req, res) => {
+    app.patch("/api/doctor/appointments/:appointmentId/status", verifyToken, verifyMedSpecialist, async (req, res) => {
       try {
         const { appointmentId } = req.params;
         const { status } = req.body;
@@ -433,22 +518,101 @@ async function run() {
 
 
 
-
     // ADMIN related apis
-    app.get("/api/admin/users", async (req, res) => {
+    app.get("/api/admin/users", verifyToken, verifyAdmin, async (req, res) => {
       
       const users = await usersCollection.find({}).sort({ createdAt: -1 }).toArray();
 
       res.send(users || []);
     });
 
-    app.get("/api/admin/doctors", async (req, res) => {
+    app.get("/api/admin/doctors", verifyToken, verifyAdmin, async (req, res) => {
       const doctors = await doctorsCollection.find({}).toArray();
       res.send(doctors || []);
     });
 
 
-    app.patch("/api/admin/users/status/:id", async (req, res) => {
+    app.get("/api/admin/appointments-register", verifyToken, verifyAdmin, async (req, res) => {
+      try {
+
+        const registerData = await appointmentsCollection.aggregate([
+          { 
+            $sort: { "createdAt": -1 } 
+          },
+          {
+            $addFields: {
+              patientObjId: {
+                $convert: {
+                  input: "$patientId",
+                  to: "objectId",
+                  onError: null, //Returns null if string is invalid
+                  onNull: null
+                }
+              },
+              doctorObjId: {
+                $convert: {
+                  input: "$doctorId",
+                  to: "objectId",
+                  onError: null, 
+                  onNull: null
+                }
+              }
+            }
+          },
+          {
+            $lookup: {
+              from: "user",
+              localField: "patientObjId",
+              foreignField: "_id",
+              as: "patientDetails"
+            }
+          },
+          { 
+            $unwind: { path: "$patientDetails", preserveNullAndEmptyArrays: true } 
+          },
+
+          {
+            $lookup: {
+              from: "doctors",
+              localField: "doctorObjId",
+              foreignField: "_id",
+              as: "doctorDetails"
+            }
+          },
+          { 
+            $unwind: { path: "$doctorDetails", preserveNullAndEmptyArrays: true } 
+          },
+
+          // 5. Project fields required for UI rendering
+          {
+            $project: {
+              _id: 1,
+              appointmentDate: 1,
+              appointmentTime: 1,
+              appointmentStatus: 1,
+              paymentStatus: 1,
+              patientName: { 
+                $ifNull: ["$patientDetails.name", "Unknown Patient"] 
+              },
+              doctorName: { 
+                $ifNull: ["$doctorDetails.doctorName", "Unknown Clinician"] 
+              },
+              doctorSpecialization: { 
+                $ifNull: ["$doctorDetails.specialization", "General Medicine"] 
+              }
+            }
+          }
+        ]).toArray();
+
+        return res.status(200).json({ success: true, data: registerData });
+      } catch (error) {
+        console.error("Admin registry tracking error:", error);
+        return res.status(500).json({ success: false, error: error.message });
+      }
+    });
+
+
+    app.patch("/api/admin/users/status/:id", verifyToken, verifyAdmin, async (req, res) => {
       try {
         const { id } = req.params;
         const { status } = req.body;
@@ -476,7 +640,7 @@ async function run() {
     });
 
 
-    app.patch("/api/admin/doctors/verify/:id", async (req, res) => {
+    app.patch("/api/admin/doctors/verify/:id", verifyToken, verifyAdmin, async (req, res) => {
       try {
         const { id } = req.params;
         const { verificationStatus } = req.body;
@@ -533,9 +697,44 @@ async function run() {
     });
 
 
+    app.delete('/api/admin/users/:id', verifyToken, verifyAdmin, async (req, res) => {
+      try {
+          const { id } = req.params;
+          
+          // Delete from user collection
+          const userResult = await usersCollection.deleteOne({ _id: new ObjectId(id) });
+
+          if (userResult.deletedCount === 1) {
+              // CASCADE DELETE from other collections
+
+              await appointmentsCollection.deleteMany({ patientId: id });
+              
+              await doctorsCollection.deleteOne({ userId: id });
+
+              return res.status(200).json({ 
+                  success: true, 
+                  message: "Ecosystem directory ledger and cascading dependencies purged cleanly." 
+              });
+          }
+          
+          return res.status(404).json({ success: false, message: "Target user not found." });
+      } catch (error) {
+          return res.status(500).json({ success: false, message: error.message });
+      }
+    });
+
+
     // Appointment related apis
-    app.get("/api/appointments/patient/:patientId", async (req, res) => {
+    app.get("/api/appointments/patient/:patientId", verifyToken, verifyPatient, async (req, res) => {
       const { patientId } = req.params;
+
+      if (!patientId) {
+        return res.status(400).json({ success: false, message: "Missing required core scheduling information." });
+      }
+
+      if (req.user._id !== patientId) {
+        return res.status(403).json({ success: false, message: "Forbidden access" });
+      }
       
       const appointments = await appointmentsCollection.aggregate([
         {
@@ -575,7 +774,7 @@ async function run() {
     });
 
 
-    app.post("/api/appointments/book", async (req, res) => {
+    app.post("/api/appointments/book", verifyToken, async (req, res) => {
       try {
         const { 
           patientId, 
@@ -619,7 +818,7 @@ async function run() {
     });
 
 
-    app.post("/api/appointments/fulfill-paid", async (req, res) => {
+    app.post("/api/appointments/fulfill-paid", verifyToken, async (req, res) => {
       try {
         const { 
           appointmentId,
@@ -701,9 +900,17 @@ async function run() {
 
 
     // Payments related apis
-    app.get("/api/payments/patient/:patientId", async (req, res) => {
+    app.get("/api/payments/patient/:patientId", verifyToken, verifyPatient, async (req, res) => {
       try {
         const { patientId } = req.params;
+
+        if (!patientId) {
+          return res.status(400).json({ success: false, message: "Missing required core scheduling information." });
+        }
+
+        if (req.user._id !== patientId) {
+          return res.status(403).json({ success: false, message: "Forbidden access" });
+        }
 
         const payments = await paymentsCollection.aggregate([
           {
@@ -762,9 +969,17 @@ async function run() {
     });
 
 
-    app.get("/api/reviews/patient/:patientId", async (req, res) => {
+    app.get("/api/reviews/patient/:patientId", verifyToken, verifyPatient, async (req, res) => {
       try {
         const { patientId } = req.params;
+
+        if (!patientId) {
+          return res.status(400).json({ success: false, message: "Missing required core scheduling information." });
+        }
+
+        if (req.user._id !== patientId) {
+          return res.status(403).json({ success: false, message: "Forbidden access" });
+        }
 
         const reviews = await reviewsCollection.aggregate([
           { $match: { patientId: patientId } },
@@ -798,7 +1013,7 @@ async function run() {
     });
 
 
-    app.post("/api/reviews", async (req, res) => {
+    app.post("/api/reviews", verifyToken, verifyPatient, async (req, res) => {
       try {
 
         // console.log("Incoming Review Body Payload:", req.body);
@@ -883,9 +1098,17 @@ async function run() {
       }
     });
 
-    app.get("/api/patient-stats/:patientId", async (req, res) => {
+    app.get("/api/patient-stats/:patientId", verifyToken, verifyPatient, async (req, res) => {
       try {
         const { patientId } = req.params;
+
+        if (!patientId) {
+          return res.status(400).json({ success: false, message: "Missing required core scheduling information." });
+        }
+
+        if (req.user._id !== patientId) {
+          return res.status(403).json({ success: false, message: "Forbidden access" });
+        }
 
         const appointmentStats = await appointmentsCollection.aggregate([
           { 
