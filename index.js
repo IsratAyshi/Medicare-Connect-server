@@ -254,6 +254,186 @@ async function run() {
     });
 
 
+    // docotr dashboard appointment and prescription related apis
+    app.get("/api/doctor/appointments/:userId", async (req, res) => {
+      try {
+        const { userId } = req.params;
+
+        const doctorProfile = await doctorsCollection.findOne({ userId: userId });
+    
+      if (!doctorProfile) {
+        return res.status(204).json({ success: true, data: [] });
+      }
+
+        const appointments = await appointmentsCollection.aggregate([
+          { 
+            $match: { 
+              doctorId: String(doctorProfile._id),
+              paymentStatus: "paid"
+            } 
+          },
+          { $sort: { 
+              appointmentDate: 1, 
+              appointmentTime: 1 
+            } 
+          },
+          {
+            $addFields: {
+              patientObjId: { $toObjectId: "$patientId" }
+            }
+          },
+          {
+            $lookup: {
+              from: "user",
+              localField: "patientObjId",
+              foreignField: "_id",
+              as: "patientDetails"
+            }
+          },
+          {
+            $unwind: {
+              path: "$patientDetails",
+              preserveNullAndEmptyArrays: true
+            }
+          }
+        ]).toArray();
+
+        return res.status(200).json({ success: true, data: appointments });
+      } catch (error) {
+        console.error("Error fetching doctor appointments:", error);
+        return res.status(500).json({ success: false, error: error.message });
+      }
+    });
+
+
+    app.get("/api/doctor/prescriptions/list/:doctorId", async (req, res) => {
+      try {
+        const { doctorId } = req.params;
+        
+        const logs = await prescriptionsCollection.aggregate([
+          { 
+            $match: { 
+              doctorId: doctorId 
+            } 
+          },
+          { 
+            $sort: { 
+              createdAt: -1 
+            } 
+          },
+          { 
+            $addFields: { 
+              patientObjId: { $toObjectId: "$patientId" } 
+            } 
+          },
+          {
+            $lookup: {
+              from: "user",
+              localField: "patientObjId",
+              foreignField: "_id",
+              as: "patient"
+            }
+          },
+          { 
+            $unwind: { 
+              path: "$patient", 
+              preserveNullAndEmptyArrays: true 
+            } 
+          }
+        ]).toArray();
+
+        return res.status(200).json({ success: true, data: logs });
+      } catch (error) {
+        return res.status(500).json({ success: false, error: error.message });
+      }
+    });
+
+
+    app.get("/api/doctor/patient-details/:patientId", async (req, res) => {
+      try {
+        const { patientId } = req.params;
+
+        const patient = await usersCollection.findOne({ 
+          _id: new ObjectId(patientId) 
+        });
+
+        return res.status(200).json({ success: true, data: patient 
+
+        });
+      } catch (error) {
+        return res.status(500).json({ success: false, error: error.message });
+      }
+    });
+
+
+    app.post("/api/doctor/prescriptions/issue", async (req, res) => {
+      try {
+        const { doctorId, patientId, appointmentId, diagnosis, medications, notes } = req.body;
+
+        if (!appointmentId || !diagnosis || !medications) {
+          return res.status(400).json({ success: false, error: "Missing required clinical fields." });
+        }
+
+        // Log the prescription
+        const prescriptionDoc = {
+          doctorId,
+          patientId,
+          appointmentId,
+          diagnosis,
+          medications,
+          notes,
+          createdAt: new Date()
+        };
+
+        await prescriptionsCollection.insertOne(prescriptionDoc);
+
+        // Update appointment status payload to 'completed'
+        await appointmentsCollection.updateOne(  
+          { _id: new ObjectId(appointmentId) },
+          { $set: { 
+              appointmentStatus: "completed" 
+            } 
+          }
+        );
+
+        return res.status(200).json({ success: true, message: "Prescription logged & appointment closed." });
+      } catch (error) {
+        console.error("Prescription execution failure:", error);
+        return res.status(500).json({ success: false, error: error.message });
+      }
+    });
+
+
+    app.patch("/api/doctor/appointments/:appointmentId/status", async (req, res) => {
+      try {
+        const { appointmentId } = req.params;
+        const { status } = req.body;
+
+        if (!["accepted", "completed"].includes(status)) {
+          return res.status(400).json({ success: false, error: "Invalid status state transition." });
+        }
+
+        const result = await appointmentsCollection.updateOne(
+          { 
+            _id: new ObjectId(appointmentId) 
+          },
+          { 
+            $set: { 
+              appointmentStatus: status 
+            } 
+          }
+        );
+
+        return res.status(200).json({ success: true, data: result });
+      } catch (error) {
+        console.error("Failed updating appointment state status:", error);
+        return res.status(500).json({ success: false, error: error.message });
+      }
+    });
+
+
+
+
     // ADMIN related apis
     app.get("/api/admin/users", async (req, res) => {
       
@@ -645,6 +825,40 @@ async function run() {
       }
     });
 
+    app.get("/api/public/top-reviews", async (req, res) => {
+      try {
+        const topReviews = await reviewsCollection.aggregate([
+          { 
+            $limit: 3 
+          },
+          {
+            $addFields: {
+              patientObjId: { $toObjectId: "$patientId" }
+            }
+          },
+          {
+            $lookup: {
+              from: "user", 
+              localField: "patientObjId",
+              foreignField: "_id",
+              as: "patientDetails"
+            }
+          },
+          {
+            $unwind: {
+              path: "$patientDetails",
+              preserveNullAndEmptyArrays: true
+            }
+          }
+        ]).toArray();
+
+        return res.status(200).json({ success: true, data: topReviews });
+      } catch (error) {
+        console.error("Failed fetching public landing page reviews:", error);
+        return res.status(500).json({ success: false, error: error.message });
+      }
+    });
+
 
     // stats related apis
     app.get('/api/overview-stats', async (req, res) => {
@@ -669,7 +883,73 @@ async function run() {
       }
     });
 
+    app.get("/api/patient-stats/:patientId", async (req, res) => {
+      try {
+        const { patientId } = req.params;
 
+        const appointmentStats = await appointmentsCollection.aggregate([
+          { 
+            $match: { patientId: patientId } 
+          },
+          {
+            $group: {
+              _id: null,
+              pendingCount: {
+                $sum: { 
+                  $cond: [{ 
+                    $in: ["$appointmentStatus", ["pending", "accepted"]] 
+                  }, 1, 0] 
+                  // if condition true then add 1 else add 0
+                }
+              },
+              completedCount: {
+                $sum: { 
+                  $cond: [{ 
+                    $eq: ["$appointmentStatus", "completed"] 
+                  }, 1, 0] 
+                }
+              }
+            }
+          }
+        ]).toArray();
+
+        const paymentStats = await paymentsCollection.aggregate([
+          { 
+            $match: { 
+            patientId: patientId 
+            } 
+        },
+          {
+            $group: {
+              _id: null,
+              totalAmount: { $sum: "$amount" }
+            }
+          }
+        ]).toArray();
+
+        const totalReviews = await reviewsCollection.countDocuments({ 
+          patientId: patientId 
+        });
+
+        const pending = appointmentStats[0]?.pendingCount || 0;
+        const completed = appointmentStats[0]?.completedCount || 0;
+        const transactionsSum = paymentStats[0]?.totalAmount || 0;
+
+        return res.status(200).json({
+          success: true,
+          stats: {
+            upcomingAppointments: String(pending),
+            completedCheckups: String(completed),
+            totalTransactions: `$${transactionsSum}`,
+            totalReviews: String(totalReviews)
+          }
+        });
+
+      } catch (error) {
+        console.error("Failed fetching dynamic dashboard stats:", error);
+        return res.status(500).json({ success: false, error: error.message });
+      }
+    });
 
 
 
