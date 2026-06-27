@@ -83,7 +83,7 @@ async function run() {
     }
 
     const verifyAdmin = async (req, res, next) => {
-        if (req.user.role !== 'admin' || req.user.accountRole !== 'admin') {
+        if (req.user.role !== 'admin') {
             return res.status(403).send({ message: 'Forbidden access' })
         }
         next();
@@ -612,6 +612,229 @@ async function run() {
     });
 
 
+    app.get("/api/admin/cashflow-ledger", verifyToken, verifyAdmin, async (req, res) => {
+        try {
+            const ledgerData = await paymentsCollection.aggregate([
+                { 
+                    $sort: { 
+                      "paymentDate": -1, 
+                      "createdAt": -1 } 
+                },
+                {
+                    $addFields: {
+                        patientObjId: {
+                            $convert: {
+                                input: "$patientId",
+                                to: "objectId",
+                                onError: null,
+                                onNull: null
+                            }
+                        },
+                        doctorObjId: {
+                            $convert: {
+                                input: "$doctorId",
+                                to: "objectId",
+                                onError: null,
+                                onNull: null
+                            }
+                        }
+                    }
+                },
+                {
+                    $lookup: {
+                        from: "user",
+                        localField: "patientObjId",
+                        foreignField: "_id",
+                        as: "patientDetails"
+                    }
+                },
+                { 
+                    $unwind: { path: "$patientDetails", preserveNullAndEmptyArrays: true } 
+                },
+                {
+                    $lookup: {
+                        from: "doctors",
+                        localField: "doctorObjId",
+                        foreignField: "_id",
+                        as: "doctorDetails"
+                    }
+                },
+                { 
+                    $unwind: { path: "$doctorDetails", preserveNullAndEmptyArrays: true } 
+                },
+                {
+                    $project: {
+                        _id: 1,
+                        amount: 1,
+                        transactionId: 1,
+                        paymentDate: 1,
+                        patientName: { 
+                            $ifNull: ["$patientDetails.name", "Unknown Patient"] 
+                        },
+                        doctorName: { 
+                            $ifNull: ["$doctorDetails.doctorName", "Unknown Clinician"] 
+                        }
+                    }
+                }
+            ]).toArray();
+
+            return res.status(200).json({ success: true, data: ledgerData });
+
+        } catch (error) {
+            console.error("Failed to compile admin cash flow ledger streams:", error);
+            return res.status(500).json({ success: false, error: "Internal server error reading payment databases" });
+        }
+    });
+
+
+    app.get('/api/admin/dashboard-stats', verifyToken, verifyAdmin, async (req, res) => {
+        try {
+
+            // Count patients
+            const totalPatients = await usersCollection.countDocuments({ 
+                accountRole: "patient_family" 
+            });
+
+            //Count approved doctors
+            const verifiedDoctors = await doctorsCollection.countDocuments({ 
+                verificationStatus: "Approved" 
+            });
+
+            //Count total appointments
+            const totalAppointments = await appointmentsCollection.countDocuments({});
+
+            //Sum of gross revenue 
+            const revenueResult = await paymentsCollection.aggregate([
+                {
+                    $group: {
+                        _id: null,
+                        totalRevenue: { $sum: "$amount" }
+                    }
+                }
+            ]).toArray();
+
+            const grossRevenue = revenueResult.length > 0 ? revenueResult[0].totalRevenue : 0;
+
+            res.status(200).send({
+                success: true,
+                data: {
+                    totalPatients,
+                    verifiedDoctors,
+                    totalAppointments,
+                    grossRevenue
+                }
+            });
+
+        } catch (error) {
+            console.error("Failed to aggregate dashboard metrics:", error);
+            res.status(500).send({ success: false, message: "Internal server error gathering stats." });
+        }
+    });
+
+
+    app.get('/api/admin/specialty-breakdown', verifyToken, verifyAdmin, async (req, res) => {
+        try {
+
+            const breakdown = await doctorsCollection.aggregate([
+                {
+                    $group: {
+                        _id: "$specialization", 
+                        count: { $sum: 1 } 
+                    }
+                },
+                {
+                    $project: {
+                        _id: 0,
+                        name: { $ifNull: ["$_id", "Unspecified"] }, 
+                        value: "$count"
+                    }
+                }
+            ]).toArray();
+
+            res.status(200).send({ success: true, data: breakdown });
+        } catch (error) {
+            console.error("Failed to fetch specialty metrics:", error);
+            res.status(500).send({ success: false, message: "Internal server error." });
+        }
+    });
+
+    app.get('/api/admin/clinician-performance', verifyToken, verifyAdmin, async (req, res) => {
+        try {
+            const performanceData = await reviewsCollection.aggregate([
+                {
+                    $group: {
+                        _id: { $toObjectId: "$doctorId" },
+                        avgRating: { $avg: "$rating" }
+                    }
+                },
+                {
+                    $lookup: {
+                        from: "doctors",
+                        localField: "_id",
+                        foreignField: "_id",
+                        as: "doctorInfo"
+                    }
+                },
+                { $unwind: "$doctorInfo" },
+                {
+                    $project: {
+                        _id: 0,
+                        name: "$doctorInfo.doctorName",
+                        rating: { $round: ["$avgRating", 1] }
+                    }
+                },
+                { $limit: 10 }
+            ]).toArray();
+
+            res.status(200).send({ success: true, data: performanceData });
+        } catch (error) {
+            console.error("Performance Index aggregation failure:", error);
+            res.status(500).send({ success: false, message: "Internal server error gathering ratings." });
+        }
+    });
+
+    app.get('/api/admin/appointment-timeline', verifyToken, verifyAdmin, async (req, res) => {
+        try {
+            //(last 7 days from now)
+            const sevenDaysAgo = new Date();
+            sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
+
+            const timelineData = await appointmentsCollection.aggregate([
+                {
+                    $match: {
+                        createdAt: { $gte: sevenDaysAgo }
+                    }
+                },
+                {
+                    $group: {
+                        _id: { 
+                          $dateToString: { 
+                            format: "%Y-%m-%d", date: "$createdAt" 
+                            } 
+                          },
+                        count: { $sum: 1 }
+                    }
+                },
+                { 
+                  $sort: { _id: 1 } 
+                }, //chronological order
+                {
+                    $project: {
+                        _id: 0, //exclude _id
+                        date: "$_id", //rename _id to date
+                        count: "$count"
+                    }
+                }
+            ]).toArray();
+
+            res.status(200).send({ success: true, data: timelineData });
+        } catch (error) {
+            console.error("Timeline aggregation failure:", error);
+            res.status(500).send({ success: false, message: "Internal server error gathering timelines." });
+        }
+    });
+
+
     app.patch("/api/admin/users/status/:id", verifyToken, verifyAdmin, async (req, res) => {
       try {
         const { id } = req.params;
@@ -732,7 +955,7 @@ async function run() {
         return res.status(400).json({ success: false, message: "Missing required core scheduling information." });
       }
 
-      if (req.user._id !== patientId) {
+      if (req.user._id.toString() !== patientId) {
         return res.status(403).json({ success: false, message: "Forbidden access" });
       }
       
@@ -908,7 +1131,7 @@ async function run() {
           return res.status(400).json({ success: false, message: "Missing required core scheduling information." });
         }
 
-        if (req.user._id !== patientId) {
+        if (req.user._id.toString() !== patientId) {
           return res.status(403).json({ success: false, message: "Forbidden access" });
         }
 
@@ -977,7 +1200,7 @@ async function run() {
           return res.status(400).json({ success: false, message: "Missing required core scheduling information." });
         }
 
-        if (req.user._id !== patientId) {
+        if (req.user._id.toString() !== patientId) {
           return res.status(403).json({ success: false, message: "Forbidden access" });
         }
 
@@ -1106,7 +1329,7 @@ async function run() {
           return res.status(400).json({ success: false, message: "Missing required core scheduling information." });
         }
 
-        if (req.user._id !== patientId) {
+        if (req.user._id.toString() !== patientId) {
           return res.status(403).json({ success: false, message: "Forbidden access" });
         }
 
