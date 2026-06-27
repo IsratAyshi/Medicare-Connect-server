@@ -243,6 +243,29 @@ async function run() {
       res.json(result);
     });
 
+    app.get('/api/doctors/:id/schedule', verifyToken, async (req, res) => {
+        try {
+            const doctorId = req.params.id;
+            
+            const doctor = await doctorsCollection.findOne({ _id: new ObjectId(doctorId) });
+            
+            if (!doctor) {
+                return res.status(404).json({ success: false, message: "Doctor profile not found." });
+            }
+
+            res.json({
+                success: true,
+                data: {
+                    availableDays: doctor.availableDays || [],
+                    availableSlots: doctor.availableSlots || []
+                }
+            });
+        } catch (error) {
+            console.error("Failed to fetch doctor schedule parameters:", error);
+            res.status(500).json({ success: false, message: "Internal server error fetching schedule data." });
+        }
+    });
+
     app.get('/api/doctors/details/:id', async (req, res) => {
       try {
         const id = req.params.id;
@@ -335,7 +358,64 @@ async function run() {
     });
 
 
-    // docotr dashboard appointment and prescription related apis
+    // docotr dashboard stats, appointment and prescription related apis
+    app.get('/api/doctor/stats/:doctorId', verifyToken, verifyMedSpecialist, async (req, res) => {
+        try {
+            const userOid = req.user._id; 
+            const userIdStr = userOid.toString();
+
+            const doctorProfile = await doctorsCollection.findOne({
+                $or: [
+                    { userId: userIdStr },
+                    { userId: userOid }
+                ]
+            });
+
+            if (!doctorProfile) {
+                return res.status(404).send({ success: false, message: "Doctor profile not found" });
+            }
+
+            const profileIdStr = doctorProfile._id?.$oid || doctorProfile._id.toString();
+            const validDoctorIds = [userIdStr, profileIdStr].filter(Boolean);
+            const doctorFilter = { doctorId: { $in: validDoctorIds } };
+
+            const uniquePatients = await appointmentsCollection.aggregate([
+                { $match: doctorFilter },
+                { $group: { _id: "$patientId" } }
+            ]).toArray();
+            
+            const totalPatientsCount = uniquePatients.length;
+
+            // Today's Pending & Accepted Appointments (countDocuments is fully supported)
+            const todayString = new Date().toISOString().split('T')[0]; 
+            
+            const todayAppointmentsCount = await appointmentsCollection.countDocuments({
+                ...doctorFilter,
+                appointmentDate: todayString,
+                appointmentStatus: { 
+                    $in: ["pending", "accepted"] 
+                }
+            });
+
+            // Reviews Received Count
+            const totalReviewsCount = await reviewsCollection.countDocuments(doctorFilter);
+
+            res.json({
+                success: true,
+                data: {
+                    totalPatients: totalPatientsCount,
+                    todayAppointments: todayAppointmentsCount,
+                    reviewsReceived: totalReviewsCount
+                }
+            });
+
+        } catch (error) {
+            console.error("Failed to aggregate dashboard metrics:", error);
+            res.status(500).json({ success: false, message: "Internal server error aggregation metrics" });
+        }
+    });
+
+
     app.get("/api/doctor/appointments/:userId", verifyToken, verifyMedSpecialist, async (req, res) => {
       try {
         const { userId } = req.params;
@@ -514,6 +594,48 @@ async function run() {
         console.error("Failed updating appointment state status:", error);
         return res.status(500).json({ success: false, error: error.message });
       }
+    });
+
+
+    app.patch("/api/doctor/prescriptions/modify/:id", verifyToken, verifyMedSpecialist, async (req, res) => {
+        try {
+            const { id } = req.params;
+            const { diagnosis, medications, notes } = req.body;
+            const doctorId = req.user._id.toString(); // 
+
+            const filter = { 
+                _id: new ObjectId(id),
+                doctorId: doctorId 
+            };
+
+            const updateDoc = {
+                $set: {
+                    ...(diagnosis && { diagnosis }),
+                    ...(medications && { medications }),
+                    notes: notes || "", 
+                    updatedAt: new Date()
+                }
+            };
+
+            const result = await prescriptionsCollection.updateOne(filter, updateDoc);
+
+            if (result.matchedCount === 0) {
+                return res.status(404).json({ 
+                    success: false, 
+                    message: "Prescription record not found or write access denied." 
+                });
+            }
+
+            return res.status(200).json({ 
+                success: true, 
+                message: "Prescription updated successfully",
+                modifiedCount: result.modifiedCount 
+            });
+
+        } catch (error) {
+            console.error("Prescription execution revision layer failure:", error);
+            return res.status(500).json({ success: false, error: "Internal Server Error altering prescription details" });
+        }
     });
 
 
@@ -1119,6 +1241,57 @@ async function run() {
         console.error("Express database fullfilment error:", error);
         return res.status(500).json({ error: "Internal database write routine failure." });
       }
+    });
+
+
+    app.patch('/api/appointments/:id/reschedule', verifyToken, verifyPatient, async (req, res) => {
+        try {
+        const appointmentId = req.params.id;
+        const { appointmentDate, appointmentTime } = req.body;
+
+        if (!appointmentDate || !appointmentTime) {
+            return res.status(400).json({ 
+                success: false, 
+                message: "Both date and time slots are required to reschedule." 
+            });
+        }
+
+        const filter = { 
+            _id: new ObjectId(appointmentId),
+            appointmentStatus: { 
+              $in: ["pending", "accepted"] 
+            } 
+        };
+
+        const updateDoc = {
+            $set: {
+                appointmentDate,
+                appointmentTime,
+                // resets the status back to "pending" so that doctor can review the new time slot
+                appointmentStatus: "pending", 
+                updatedAt: new Date()
+            }
+        };
+
+        const result = await appointmentsCollection.updateOne(filter, updateDoc);
+
+
+        if (result.matchedCount === 0) {
+            return res.status(404).json({ 
+                success: false, 
+                message: "Appointment record not found or ineligible for rescheduling (e.g., already completed or cancelled)." 
+            });
+        }
+
+        res.json({
+            success: true,
+            message: "Appointment successfully rescheduled!"
+        });
+
+        } catch (error) {
+            console.error("Failed to reschedule appointment:", error);
+            res.status(500).json({ success: false, message: "Internal server error during rescheduling modification." });
+        }
     });
 
 
