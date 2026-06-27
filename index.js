@@ -1295,6 +1295,53 @@ async function run() {
     });
 
 
+    app.delete('/api/appointments/:id', verifyToken, verifyPatient, async (req, res) => {
+      try {
+          const appointmentId = req.params.id;
+
+          if (!ObjectId.isValid(appointmentId)) {
+              return res.status(400).json({ success: false, message: "Invalid Appointment identity format specified." });
+          }
+
+          const appointmentQuery = { 
+            _id: new ObjectId(appointmentId) 
+          };
+
+          const appointment = await appointmentsCollection.findOne(appointmentQuery);
+          
+          if (!appointment) {
+              return res.status(404).json({ success: false, message: "Target appointment statement record could not be found." });
+          }
+
+
+          if (appointment.paymentStatus === 'paid') {
+              await paymentsCollection.deleteOne(
+                { 
+                  appointmentId: appointmentId 
+                }
+              );
+
+              console.log(`Removed billing file tied to Appointment ${appointmentId}`);
+          }
+
+          const deleteResult = await appointmentsCollection.deleteOne(appointmentQuery);
+
+          if (deleteResult.deletedCount === 1) {
+              return res.status(200).json({ 
+                  success: true, 
+                  message: "Appointment along with associated financial listings successfully removed." 
+              });
+          } else {
+              return res.status(500).json({ success: false, message: "Execution failure: DB document dropped zero index items." });
+          }
+
+        } catch (error) {
+            console.error("System exception caught inside DELETE appointment pipeline:", error);
+            return res.status(500).json({ success: false, message: "An unexpected fatal cluster error occurred on the core database." });
+        }
+    });
+
+
     // Payments related apis
     app.get("/api/payments/patient/:patientId", verifyToken, verifyPatient, async (req, res) => {
       try {
